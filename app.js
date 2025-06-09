@@ -1,138 +1,165 @@
 const { Client } = require('discord.js-selfbot-v13');
 const dotenv = require('dotenv');
-const schedule = require('node-schedule');
 const axios = require('axios');
-const fs = require('fs');
+const schedule = require('node-schedule');
 
-// Load initial .env
 dotenv.config();
 
-const channelId = '1320253218403516467';
-const webhookUrl = 'https://discord.com/api/webhooks/1377891976959098911/JLo3xZsGkEu72_7En5zknK5jlXtEpAK3DSC7Ddgz0ZA1jwy49Q3xRCmfOtty2MaWqHoq';
+const applicationId = '1377731759625470053';
+const guildId = '1299797029962383441';
+const channelId = '1363338883508736160';
+const commandId = '1381037772093132830';
+const version = '1381037772093132831';
 
-const activeBots = new Map(); // token -> { client, scheduledJobs, messageCount }
-
-axios.post(webhookUrl, { content: '**Scripted Start!**' });
-
-async function logToWebhook(botName, nextRunDate = null, delaySeconds = null, count = 0) {
-    let relativeTime = '';
-    let delayInfo = '';
-    let countInfo = `(Total: ${count})`;
-
-    if (nextRunDate) {
-        const unixTimestamp = Math.floor(nextRunDate.getTime() / 1000);
-        relativeTime = `**Next:** <t:${unixTimestamp}:R>`;
-    }
-
-    if (delaySeconds !== null) {
-        const mins = Math.floor(delaySeconds / 60);
-        const secs = delaySeconds % 60;
-        const delayText = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-        delayInfo = `with **${delayText}**`;
-    }
-
-    const content = `**[${botName}]** **Sent!**  ${relativeTime} ${delayInfo} ${countInfo}`;
-
-    console.log(content.replace(/\*\*/g, ''));
-
-    try {
-        await axios.post(webhookUrl, { content });
-    } catch (err) {
-        console.error(`❌ [${botName}] Failed to send log to webhook:`, err.message);
-    }
+const webhookUrl = process.env.WEBHOOK;
+if (!webhookUrl) {
+  console.error("❌ ERROR: WEBHOOK env var missing");
+  process.exit(1);
 }
 
-function startBot(token, index) {
-    const client = new Client();
-    let messageCount = 0;
-    const scheduledJobs = [];
+const tokens = process.env.TOKENS
+  ?.split(',')
+  .map(t => t.trim())
+  .filter(Boolean);
 
-    async function sendClaimXpWithDelay() {
-        const delaySeconds = Math.floor(Math.random() * 1200) + 1;
-        const delayMs = delaySeconds * 1000;
+if (!tokens || tokens.length === 0) {
+  console.error("❌ ERROR: TOKENS env var missing or empty");
+  process.exit(1);
+}
 
-        setTimeout(async () => {
-            try {
-                const channel = await client.channels.fetch(channelId);
-                if (channel) {
-                    await channel.send("$claimxp");
-                    messageCount++;
+// Webhook logger
+async function logToWebhook(botName, nextRunDate, count) {
+  const ts = Math.floor(nextRunDate.getTime() / 1000);
+  const rel = `<t:${ts}:R>`;
+  const content = `**[${botName}]** **Sent!**  **Next:** ${rel} (Total: ${count})`;
 
-                    const now = new Date();
-                    const nextRun = new Date(now.getTime() + (60 - now.getMinutes() % 60) * 60 * 1000);
-                    await logToWebhook(client.user.username, nextRun, delaySeconds, messageCount);
-                } else {
-                    console.error(`[${client.user.username}] ❌ Could not fetch the channel.`);
-                }
-            } catch (err) {
-                console.error(`[${client.user?.username || `Client ${index + 1}`}] ❌ Error while sending message: ${err.message}`);
-            }
-        }, delayMs);
+  console.log(content.replace(/\*\*/g, ''));
+  try {
+    await axios.post(webhookUrl, { content });
+  } catch (err) {
+    console.error(`❌ [${botName}] webhook log failed:`, err.message);
+  }
+}
+
+// Slash command sender
+async function sendSlash(token, session_id, botName) {
+  const payload = {
+    type: 2,
+    application_id: applicationId,
+    guild_id: guildId,
+    channel_id: channelId,
+    session_id,
+    data: {
+      version,
+      id: commandId,
+      guild_id: guildId,
+      name: 'claimxp',
+      type: 1,
+      options: [],
+      application_command: {
+        id: commandId,
+        type: 1,
+        application_id: applicationId,
+        guild_id: guildId,
+        version,
+        name: 'claimxp',
+        description: 'Claim random XP (50120) once per hour',
+        integration_types: [0],
+        options: [],
+        description_localized: 'Claim random XP (50120) once per hour',
+        name_localized: 'claimxp',
+      },
+      attachments: [],
+    },
+    nonce: Date.now().toString(),
+    analytics_location: 'slash_ui',
+  };
+
+  console.log(`[${botName}] Sending /claimxp with session_id: ${session_id}`);
+
+  try {
+    await axios.post(
+      'https://discord.com/api/v9/interactions',
+      payload,
+      {
+        headers: {
+          Authorization: token,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        },
+      }
+    );
+    return true;
+  } catch (err) {
+    if (err.response) {
+      console.error(`❌ [${botName}] /claimxp failed:`, {
+        status: err.response.status,
+        data: err.response.data,
+        headers: err.response.headers,
+      });
+    } else {
+      console.error(`❌ [${botName}] /claimxp failed:`, err.message);
     }
+    return false;
+  }
+}
+
+// Start the script
+(async () => {
+  await axios.post(webhookUrl, { content: '**Scripted Start!**' });
+
+  tokens.forEach((token, idx) => {
+    const client = new Client();
+    let session_id = null;
+    let messageCount = 0;
 
     client.on('ready', async () => {
-        const botName = client.user.username;
-        const minuteOffset = (index * 5) % 60;
-        const cronTime = `${minuteOffset} * * * *`;
+      const botName = client.user?.username || `Bot${idx + 1}`;
 
-        console.log(`[${botName}] Scheduled at minute ${minuteOffset} of every hour.`);
-        const job = schedule.scheduleJob(cronTime, sendClaimXpWithDelay);
-        scheduledJobs.push(job);
+      function updateSessionId() {
+        session_id = client.ws.shards.first().sessionId;
+        console.log(`[${botName}] Updated session_id: ${session_id}`);
+      }
 
-        await sendClaimXpWithDelay();
+      updateSessionId();
+
+      client.ws.on('SESSION_REPLACE', newSessionId => {
+        session_id = newSessionId;
+        console.log(`[${botName}] SESSION_REPLACE event: session_id updated to ${session_id}`);
+      });
+
+      client.ws.on('RESUME', () => {
+        updateSessionId();
+        console.log(`[${botName}] RESUME event: session_id updated to ${session_id}`);
+      });
+
+      client.ws.on('SHARD_RECONNECT', () => {
+        updateSessionId();
+        console.log(`[${botName}] SHARD_RECONNECT event: session_id updated to ${session_id}`);
+      });
+
+      const job = schedule.scheduleJob('0 * * * *', async () => {
+        const delay = (Math.floor(Math.random() * 1200) + 1) * 1000;
+        setTimeout(async () => {
+          if (!session_id) {
+            console.warn(`[${botName}] Skipping run - no session_id yet`);
+            return;
+          }
+
+          const success = await sendSlash(token, session_id, botName);
+          if (success) {
+            messageCount++;
+            const next = new Date(Date.now() + 60 * 60 * 1000);
+            await logToWebhook(botName, next, messageCount);
+          }
+        }, delay);
+      });
+
+      job.invoke();
     });
 
-    client.login(token);
-    activeBots.set(token, { client, scheduledJobs, messageCount });
-}
-
-function stopBot(token) {
-    const botData = activeBots.get(token);
-    if (!botData) return;
-
-    const { client, scheduledJobs } = botData;
-
-    scheduledJobs.forEach(job => job.cancel());
-
-    try {
-        client.destroy();
-        console.log(`[${client.user?.username || 'Bot'}] Stopped and cleaned up.`);
-    } catch (err) {
-        console.error(`[Bot] ❌ Error during cleanup: ${err.message}`);
-    }
-
-    activeBots.delete(token);
-}
-
-function syncTokens() {
-    const envConfig = dotenv.parse(fs.readFileSync('.env'));
-    const tokens = envConfig.TOKENS?.split(',').map(t => t.trim()).filter(Boolean) || [];
-
-    const currentSet = new Set(tokens);
-    const existingSet = new Set(activeBots.keys());
-
-    // Start new tokens
-    tokens.forEach((token, index) => {
-        if (!activeBots.has(token)) {
-            startBot(token, activeBots.size);
-        }
+    client.login(token).catch(err => {
+      console.error(`❌ [Bot${idx + 1}] login failed:`, err.message);
     });
-
-    // Stop removed tokens
-    [...existingSet].forEach(token => {
-        if (!currentSet.has(token)) {
-            console.log(`[Bot] Token removed from .env — stopping bot.`);
-            stopBot(token);
-        }
-    });
-
-    if (tokens.length === 0) {
-        console.error("❌ ERROR: No tokens found in .env.");
-    }
-}
-
-// Initial sync
-syncTokens();
-
-// Repeat sync every hour
-setInterval(syncTokens, 60 * 60 * 1000);
+  });
+})();
