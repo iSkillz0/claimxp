@@ -1,4 +1,1 @@
-/home/iskillz0/PROJECTCLAIMXP
-/home/iskillz0/PROJECTCLAIMXP/node_modules/discord.js-selfbot-v13
-/home/iskillz0/PROJECTCLAIMXP/node_modules/dotenv
-/home/iskillz0/PROJECTCLAIMXP/node_modules/node-schedule
+
